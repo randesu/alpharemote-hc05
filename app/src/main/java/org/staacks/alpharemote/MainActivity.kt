@@ -1,9 +1,14 @@
 package org.staacks.alpharemote
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.util.Log
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.findNavController
@@ -11,6 +16,8 @@ import androidx.navigation.ui.setupWithNavController
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import kotlinx.coroutines.launch
 import org.staacks.alpharemote.camera.CameraAction
+import org.staacks.alpharemote.camera.CameraActionPreset
+import org.staacks.alpharemote.input.BluetoothSppManager
 import org.staacks.alpharemote.databinding.ActivityMainBinding
 import org.staacks.alpharemote.service.AlphaRemoteService
 import org.staacks.alpharemote.service.ServiceRunning
@@ -19,6 +26,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var customButtonList: List<CameraAction>? = null
+    private var bluetoothSppManager: BluetoothSppManager? = null
 
     companion object {
         const val NAVIGATE_TO_INTENT_EXTRA = "nav_to"
@@ -49,6 +57,55 @@ class MainActivity : AppCompatActivity() {
                 customButtonList = it.customButtonList
             }
         }
+    }
+
+
+    override fun onStart() {
+        super.onStart()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "BLUETOOTH_CONNECT permission is missing; HC-05 input will not start.")
+            return
+        }
+
+        bluetoothSppManager = BluetoothSppManager(
+            context = this,
+            onConnected = { device ->
+                runOnUiThread {
+                    android.widget.Toast.makeText(this, "HC-05 terhubung: $device", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            },
+            onShutterCommand = {
+                runOnUiThread {
+                    if (AlphaRemoteService.serviceState.value is ServiceRunning) {
+                        val shutterAction = CameraAction(
+                            toggle = false,
+                            selftimer = null,
+                            duration = null,
+                            step = null,
+                            preset = CameraActionPreset.TRIGGER_ONCE
+                        )
+                        AlphaRemoteService.sendCameraAction(this, shutterAction)
+                    } else {
+                        Log.w(TAG, "HC-05 shutter command ignored: Sony camera is not connected.")
+                    }
+                }
+            },
+            onError = { message ->
+                runOnUiThread {
+                    Log.w(TAG, message)
+                    android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        ).also { it.connectToPairedHC05() }
+    }
+
+    override fun onStop() {
+        bluetoothSppManager?.close()
+        bluetoothSppManager = null
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent?) {
